@@ -14,6 +14,7 @@ function initNavigation() {
       s.classList.toggle('active', s.id === `section-${target}`);
     });
     if (target === 'map') onMapSectionShow();
+    if (target === 'community') refreshCommunity();
   }
 
   tabs.forEach(tab => {
@@ -50,8 +51,7 @@ function boot() {
 
   document.addEventListener('locale-change', () => {
     updateHeaderUI();
-    renderPosts();
-    renderSidebar();
+    refreshCommunity();
   });
 }
 

@@ -260,41 +260,34 @@ async function aggregateNews(force = false, lang = 'zh') {
   return { items: trimmed, added: actuallyAdded, total: trimmed.length };
 }
 
-app.use(express.json({ limit: '1mb' }));
-app.use('/uploads', express.static(UPLOADS_DIR));
+function buildPostPayload(body, files = {}) {
+  const { title, content, tags, authorId, authorName, authorAvatar } = body;
+  const hasText = Boolean(String(content || '').trim());
+  const hasMedia = Boolean(files?.images?.length || files?.video?.length);
+  if ((!hasText && !hasMedia) || !authorId || !authorName) {
+    return { error: '缺少内容或作者信息' };
+  }
 
-app.get('/api/posts', (_req, res) => {
-  res.json({ items: getPosts() });
-});
-
-app.post('/api/posts', upload.fields([
-  { name: 'images', maxCount: 4 },
-  { name: 'video', maxCount: 1 },
-]), (req, res) => {
-  try {
-    const { title, content, tags, authorId, authorName, authorAvatar } = req.body;
-    const hasText = Boolean(content?.trim());
-    const hasMedia = Boolean(req.files?.images?.length || req.files?.video?.length);
-    if ((!hasText && !hasMedia) || !authorId || !authorName) {
-      return res.status(400).json({ error: '缺少内容或作者信息' });
-    }
-
-    let parsedTags = [];
-    if (tags) {
+  let parsedTags = [];
+  if (tags) {
+    if (Array.isArray(tags)) parsedTags = tags;
+    else {
       try { parsedTags = JSON.parse(tags); } catch { parsedTags = []; }
     }
+  }
 
-    const images = (req.files?.images || []).map(f => `/uploads/${f.filename}`);
-    const videoFile = req.files?.video?.[0];
-    const video = videoFile ? `/uploads/${videoFile.filename}` : null;
+  const images = (files.images || []).map(f => `/uploads/${f.filename}`);
+  const videoFile = files.video?.[0];
+  const video = videoFile ? `/uploads/${videoFile.filename}` : null;
 
-    const post = createPost({
+  return {
+    post: {
       id: `post-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       authorId,
       authorName,
       authorAvatar: authorAvatar || '',
       title: (title || '').trim(),
-      content: (content || '').trim() || ' ',
+      content: String(content || '').trim() || ' ',
       tags: parsedTags,
       images,
       video,
@@ -302,12 +295,46 @@ app.post('/api/posts', upload.fields([
       comments: [],
       shares: 0,
       createdAt: Date.now(),
-    });
+    },
+  };
+}
 
-    res.json({ post });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+app.use(express.json({ limit: '1mb' }));
+app.use('/uploads', express.static(UPLOADS_DIR));
+
+app.get('/api/posts', (_req, res) => {
+  res.json({ items: getPosts() });
+});
+
+app.post('/api/posts', (req, res, next) => {
+  if (req.is('application/json')) {
+    try {
+      const built = buildPostPayload(req.body);
+      if (built.error) return res.status(400).json({ error: built.error });
+      const post = createPost(built.post);
+      return res.json({ post });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
   }
+
+  upload.fields([
+    { name: 'images', maxCount: 4 },
+    { name: 'video', maxCount: 1 },
+  ])(req, res, (err) => {
+    if (err) return next(err);
+    try {
+      const built = buildPostPayload(req.body, {
+        images: req.files?.images || [],
+        video: req.files?.video || [],
+      });
+      if (built.error) return res.status(400).json({ error: built.error });
+      const post = createPost(built.post);
+      res.json({ post });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 });
 
 app.post('/api/posts/:id/like', (req, res) => {

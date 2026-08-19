@@ -1,5 +1,5 @@
 /** StarPulse 离线壳 — 静态资源缓存，资讯接口始终走网络 */
-const CACHE = 'starpulse-v2';
+const CACHE = 'starpulse-v3';
 const SHELL = [
   '/',
   '/index.html',

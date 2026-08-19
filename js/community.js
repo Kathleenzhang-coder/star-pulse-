@@ -10,6 +10,21 @@ const API_BASE = window.location.protocol.startsWith('http')
   ? ''
   : 'http://127.0.0.1:5174';
 
+function normalizePost(post) {
+  if (!post || typeof post !== 'object') return null;
+  return {
+    ...post,
+    title: post.title || '',
+    content: post.content || '',
+    tags: Array.isArray(post.tags) ? post.tags : [],
+    images: Array.isArray(post.images) ? post.images : [],
+    likes: Array.isArray(post.likes) ? post.likes : [],
+    comments: Array.isArray(post.comments) ? post.comments : [],
+    shares: post.shares || 0,
+    createdAt: post.createdAt || Date.now(),
+  };
+}
+
 function getCommunityPost(id) {
   return posts.find(p => p.id === id) || null;
 }
@@ -22,34 +37,27 @@ async function addPostComment(id, comment) {
   });
   if (!resp.ok) throw new Error('comment failed');
   const data = await resp.json();
+  const normalized = normalizePost(data.post);
   const idx = posts.findIndex(p => p.id === id);
-  if (idx >= 0) posts[idx] = data.post;
-  return data.post;
+  if (idx >= 0 && normalized) posts[idx] = normalized;
+  return normalized;
 }
 
 function initCommunity() {
   bindEvents();
-  loadPosts().then(() => {
-    renderPosts();
-    renderSidebar();
-  });
+  refreshCommunity();
   if (postsRefreshTimer) clearInterval(postsRefreshTimer);
-  postsRefreshTimer = setInterval(() => {
-    loadPosts().then(() => {
-      renderPosts();
-      renderSidebar();
-    });
-  }, 45000);
+  postsRefreshTimer = setInterval(refreshCommunity, 45000);
 }
 
 async function loadPosts() {
   try {
-    const resp = await fetch(`${API_BASE}/api/posts`);
-    if (!resp.ok) throw new Error('fetch failed');
+    const resp = await fetch(`${API_BASE}/api/posts`, { cache: 'no-store' });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
-    posts = data.items || [];
-  } catch {
-    posts = posts.length ? posts : [];
+    posts = (data.items || []).map(normalizePost).filter(Boolean);
+  } catch (err) {
+    console.warn('[树洞] 加载失败:', err.message);
   }
 }
 
@@ -154,42 +162,77 @@ function renderMediaPreview() {
   });
 }
 
+async function createPostOnServer(payload) {
+  const hasMedia = pendingImageFiles.length > 0 || pendingVideoFile;
+
+  let resp;
+  if (hasMedia) {
+    const fd = new FormData();
+    Object.entries(payload).forEach(([key, val]) => {
+      if (key === 'tags') fd.append(key, JSON.stringify(val));
+      else fd.append(key, val);
+    });
+    pendingImageFiles.forEach(file => fd.append('images', file));
+    if (pendingVideoFile) fd.append('video', pendingVideoFile);
+    resp = await fetch(`${API_BASE}/api/posts`, { method: 'POST', body: fd });
+  } else {
+    resp = await fetch(`${API_BASE}/api/posts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  const text = await resp.text();
+  let data = {};
+  try { data = JSON.parse(text); } catch { /* HTML error page */ }
+
+  if (!resp.ok) {
+    throw new Error(data.error || t('post_toast_fail'));
+  }
+  return normalizePost(data.post);
+}
+
 async function handlePostSubmit(e) {
   e.preventDefault();
   const user = getUser();
-  if (!user) return;
+  if (!user) {
+    document.getElementById('login-modal').showModal();
+    return;
+  }
 
+  const form = e.currentTarget;
   const title = document.getElementById('post-title').value.trim();
   const content = document.getElementById('post-content').value.trim();
   const tags = parseTags(document.getElementById('post-tags').value);
+  const hasMedia = pendingImageFiles.length > 0 || pendingVideoFile;
 
-  if (!content && !pendingImageFiles.length && !pendingVideoFile) return;
+  if (!content && !hasMedia) {
+    showToast(t('post_empty_hint'), 'error');
+    return;
+  }
 
-  const fd = new FormData();
-  fd.append('title', title);
-  fd.append('content', content || ' ');
-  fd.append('tags', JSON.stringify(tags));
-  fd.append('authorId', user.id);
-  fd.append('authorName', user.nickname);
-  fd.append('authorAvatar', user.avatar);
-  pendingImageFiles.forEach(file => fd.append('images', file));
-  if (pendingVideoFile) fd.append('video', pendingVideoFile);
-
-  const submitBtn = e.target.querySelector('[type="submit"]');
+  const submitBtn = form.querySelector('[type="submit"]');
   submitBtn.disabled = true;
 
   try {
-    const resp = await fetch(`${API_BASE}/api/posts`, { method: 'POST', body: fd });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err.error || '发布失败');
-    }
-    const data = await resp.json();
-    if (data.post) {
-      posts.unshift(data.post);
+    const post = await createPostOnServer({
+      title,
+      content,
+      tags,
+      authorId: user.id,
+      authorName: user.nickname,
+      authorAvatar: user.avatar,
+    });
+
+    if (post) {
+      const idx = posts.findIndex(p => p.id === post.id);
+      if (idx >= 0) posts[idx] = post;
+      else posts.unshift(post);
     } else {
       await loadPosts();
     }
+
     renderPosts();
     renderSidebar();
     document.getElementById('post-modal').close();
@@ -209,15 +252,23 @@ function renderPosts() {
   const empty = document.getElementById('posts-empty');
   const user = getUser();
 
+  if (!feed || !empty) return;
+
   if (posts.length === 0) {
     feed.innerHTML = '';
     empty.classList.remove('hidden');
     return;
   }
 
-  empty.classList.add('hidden');
-  feed.innerHTML = posts.map(post => renderPostCard(post, user)).join('');
-  bindPostActions();
+  try {
+    feed.innerHTML = posts.map(post => renderPostCard(post, user)).join('');
+    bindPostActions();
+    empty.classList.add('hidden');
+  } catch (err) {
+    console.error('[树洞] 渲染失败:', err);
+    feed.innerHTML = '';
+    empty.classList.remove('hidden');
+  }
 }
 
 function mediaUrl(src) {
@@ -227,34 +278,38 @@ function mediaUrl(src) {
 }
 
 function renderPostCard(post, user) {
-  const liked = user && post.likes.includes(user.id);
-  const mediaHtml = renderPostMedia(post);
-  const tagsHtml = post.tags?.length
-    ? `<div class="post-tags">${post.tags.map(tag => `<span class="post-tag">#${escapeHtml(tag)}</span>`).join('')}</div>`
+  const p = normalizePost(post);
+  if (!p) return '';
+
+  const liked = user && p.likes.includes(user.id);
+  const mediaHtml = renderPostMedia(p);
+  const body = (p.content || '').trim();
+  const tagsHtml = p.tags.length
+    ? `<div class="post-tags">${p.tags.map(tag => `<span class="post-tag">#${escapeHtml(String(tag))}</span>`).join('')}</div>`
     : '';
 
   return `
-    <article class="post-card" data-id="${post.id}">
+    <article class="post-card" data-id="${p.id}">
       <div class="post-header">
-        <img class="post-avatar" src="${post.authorAvatar || avatarUrl(post.authorName)}" alt="" />
+        <img class="post-avatar" src="${p.authorAvatar || avatarUrl(p.authorName)}" alt="" />
         <div>
-          <div class="post-author">${escapeHtml(post.authorName)}</div>
-          <div class="post-time">${formatTime(post.createdAt)}</div>
+          <div class="post-author">${escapeHtml(p.authorName)}</div>
+          <div class="post-time">${formatTime(p.createdAt)}</div>
         </div>
       </div>
-      ${post.title ? `<h3 class="post-title">${escapeHtml(post.title)}</h3>` : ''}
-      <div class="post-content">${escapeHtml(post.content.trim())}</div>
+      ${p.title ? `<h3 class="post-title">${escapeHtml(p.title)}</h3>` : ''}
+      ${body ? `<div class="post-content">${escapeHtml(body)}</div>` : ''}
       ${tagsHtml}
       ${mediaHtml}
       <div class="post-actions">
-        <button class="action-btn ${liked ? 'liked' : ''}" data-action="like" data-id="${post.id}">
-          ${liked ? '❤️' : '🤍'} ${post.likes.length || t('action_like')}
+        <button class="action-btn ${liked ? 'liked' : ''}" data-action="like" data-id="${p.id}">
+          ${liked ? '❤️' : '🤍'} ${p.likes.length || t('action_like')}
         </button>
-        <button class="action-btn" data-action="comment" data-id="${post.id}">
-          💬 ${post.comments.length || t('action_comment')}
+        <button class="action-btn" data-action="comment" data-id="${p.id}">
+          💬 ${p.comments.length || t('action_comment')}
         </button>
-        <button class="action-btn" data-action="share" data-id="${post.id}">
-          ↗ ${post.shares || t('action_share')}
+        <button class="action-btn" data-action="share" data-id="${p.id}">
+          ↗ ${p.shares || t('action_share')}
         </button>
       </div>
     </article>
@@ -304,8 +359,9 @@ async function handleLike(post) {
     });
     if (!resp.ok) throw new Error('like failed');
     const data = await resp.json();
+    const normalized = normalizePost(data.post);
     const idx = posts.findIndex(p => p.id === post.id);
-    if (idx >= 0) posts[idx] = data.post;
+    if (idx >= 0 && normalized) posts[idx] = normalized;
     renderPosts();
     renderSidebar();
   } catch {
@@ -314,27 +370,32 @@ async function handleLike(post) {
 }
 
 async function handleShare(post) {
-  await shareText(post.content, `post-${post.id}`);
+  await shareText(post.content || post.title || '', `post-${post.id}`);
   try {
     const resp = await fetch(`${API_BASE}/api/posts/${post.id}/share`, { method: 'POST' });
     if (resp.ok) {
       const data = await resp.json();
+      const normalized = normalizePost(data.post);
       const idx = posts.findIndex(p => p.id === post.id);
-      if (idx >= 0) posts[idx] = data.post;
+      if (idx >= 0 && normalized) posts[idx] = normalized;
     }
   } catch { /* ignore */ }
   renderPosts();
 }
 
 function renderSidebar() {
-  document.getElementById('topic-list').innerHTML = getHotTopics().map(
+  const topicList = document.getElementById('topic-list');
+  const stats = document.getElementById('community-stats');
+  if (!topicList || !stats) return;
+
+  topicList.innerHTML = getHotTopics().map(
     topic => `<li data-topic="${topic}">${topic}</li>`,
   ).join('');
 
   const totalLikes = posts.reduce((s, p) => s + (p.likes?.length || 0), 0);
   const totalComments = posts.reduce((s, p) => s + (p.comments?.length || 0), 0);
 
-  document.getElementById('community-stats').innerHTML = `
+  stats.innerHTML = `
     <div class="stat-item"><div class="stat-value">${posts.length}</div><div class="stat-label">${t('stat_posts')}</div></div>
     <div class="stat-item"><div class="stat-value">${totalLikes}</div><div class="stat-label">${t('stat_likes')}</div></div>
     <div class="stat-item"><div class="stat-value">${totalComments}</div><div class="stat-label">${t('stat_comments')}</div></div>

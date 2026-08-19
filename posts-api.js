@@ -28,7 +28,25 @@ function savePostsRaw(posts) {
 }
 
 function getPosts() {
-  return loadPostsRaw().sort((a, b) => b.createdAt - a.createdAt);
+  return loadPostsRaw()
+    .map(normalizePost)
+    .filter(Boolean)
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+function normalizePost(p) {
+  if (!p || typeof p !== 'object') return null;
+  return {
+    ...p,
+    title: p.title || '',
+    content: p.content || '',
+    tags: Array.isArray(p.tags) ? p.tags : [],
+    images: Array.isArray(p.images) ? p.images : [],
+    likes: Array.isArray(p.likes) ? p.likes : [],
+    comments: Array.isArray(p.comments) ? p.comments : [],
+    shares: p.shares || 0,
+    createdAt: p.createdAt || Date.now(),
+  };
 }
 
 function getPost(id) {

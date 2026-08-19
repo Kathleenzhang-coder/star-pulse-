@@ -85,7 +85,7 @@
           <h1 data-i18n="community_title">树洞</h1>
           <p class="subtitle" data-i18n="community_subtitle">图文视频随发 · 点赞评论转发</p>
         </div>
-        <button class="btn-primary" id="create-post-btn" data-i18n="community_create">＋ 发树洞</button>
+        <button class="btn-primary" id="create-post-btn" data-i18n="community_create">＋ 发新帖</button>
       </div>
       <div class="community-layout">
         <aside class="community-sidebar">
@@ -100,7 +100,7 @@
         </aside>
         <div class="post-feed" id="post-feed"></div>
       </div>
-      <div class="empty-state hidden" id="posts-empty">
+      <div class="empty-state" id="posts-empty">
         <p data-i18n="community_empty">树洞还是空的</p>
       </div>
     </main>
@@ -171,7 +171,7 @@
   <dialog class="modal" id="post-modal">
     <div class="modal-content modal-lg">
       <button class="modal-close" data-close="post-modal">&times;</button>
-      <h2 data-i18n="post_modal_title">发树洞</h2>
+      <h2 data-i18n="post_modal_title">发新帖</h2>
       <form id="post-form">
         <label><span data-i18n="label_title_opt">标题（可选）</span>
           <input type="text" id="post-title" data-i18n-placeholder="post_title_ph" maxlength="100" /></label>
