@@ -6,10 +6,6 @@ let pendingVideoFile = null;
 let pendingPreviewUrls = [];
 let postsRefreshTimer = null;
 
-const API_BASE = window.location.protocol.startsWith('http')
-  ? ''
-  : 'http://127.0.0.1:5174';
-
 function normalizePost(post) {
   if (!post || typeof post !== 'object') return null;
   return {
@@ -30,7 +26,7 @@ function getCommunityPost(id) {
 }
 
 async function addPostComment(id, comment) {
-  const resp = await fetch(`${API_BASE}/api/posts/${id}/comments`, {
+  const resp = await fetch(`${getApiBase()}/api/posts/${id}/comments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(comment),
@@ -52,7 +48,7 @@ function initCommunity() {
 
 async function loadPosts() {
   try {
-    const resp = await fetch(`${API_BASE}/api/posts`, { cache: 'no-store' });
+    const resp = await fetch(`${getApiBase()}/api/posts`, { cache: 'no-store' });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     posts = (data.items || []).map(normalizePost).filter(Boolean);
@@ -174,9 +170,9 @@ async function createPostOnServer(payload) {
     });
     pendingImageFiles.forEach(file => fd.append('images', file));
     if (pendingVideoFile) fd.append('video', pendingVideoFile);
-    resp = await fetch(`${API_BASE}/api/posts`, { method: 'POST', body: fd });
+    resp = await fetch(`${getApiBase()}/api/posts`, { method: 'POST', body: fd });
   } else {
-    resp = await fetch(`${API_BASE}/api/posts`, {
+    resp = await fetch(`${getApiBase()}/api/posts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -274,7 +270,7 @@ function renderPosts() {
 function mediaUrl(src) {
   if (!src) return '';
   if (src.startsWith('http') || src.startsWith('data:')) return src;
-  return `${API_BASE}${src}`;
+  return `${getApiBase()}${src}`;
 }
 
 function renderPostCard(post, user) {
@@ -352,7 +348,7 @@ async function handleLike(post) {
   if (!requireLogin()) return;
   const uid = getUser().id;
   try {
-    const resp = await fetch(`${API_BASE}/api/posts/${post.id}/like`, {
+    const resp = await fetch(`${getApiBase()}/api/posts/${post.id}/like`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId: uid }),
@@ -372,7 +368,7 @@ async function handleLike(post) {
 async function handleShare(post) {
   await shareText(post.content || post.title || '', `post-${post.id}`);
   try {
-    const resp = await fetch(`${API_BASE}/api/posts/${post.id}/share`, { method: 'POST' });
+    const resp = await fetch(`${getApiBase()}/api/posts/${post.id}/share`, { method: 'POST' });
     if (resp.ok) {
       const data = await resp.json();
       const normalized = normalizePost(data.post);

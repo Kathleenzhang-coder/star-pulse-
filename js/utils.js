@@ -1,5 +1,11 @@
 /** 工具函数 */
 
+function getApiBase() {
+  return window.location.protocol.startsWith('http')
+    ? ''
+    : 'http://127.0.0.1:5174';
+}
+
 function formatTime(ts) {
   const diff = Date.now() - ts;
   const mins = Math.floor(diff / 60000);

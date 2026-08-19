@@ -12,9 +12,6 @@ const PAGE_SIZE = 50;
 const REFRESH_INTERVAL = 5 * 60 * 1000;
 const MAX_NEWS_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const MIN_NEWS_TS = new Date('2026-01-01T00:00:00+08:00').getTime();
-const API_BASE = window.location.protocol.startsWith('http')
-  ? ''
-  : 'http://127.0.0.1:5174';
 
 const FEED_AVATAR_SEED = 'xingxun-gossip';
 
@@ -141,7 +138,7 @@ async function fetchRealNews(manual = false) {
   const cacheKey = `newsFeed_${lang}`;
 
   try {
-    const url = `${API_BASE}/api/news?lang=${lang}${manual ? '&refresh=1' : ''}`;
+    const url = `${getApiBase()}/api/news?lang=${lang}${manual ? '&refresh=1' : ''}`;
     const resp = await fetch(url);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
