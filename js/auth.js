@@ -81,7 +81,8 @@ function initAuthUI() {
     if (currentUser) {
       showProfileEditor();
     } else {
-      loginModal.showModal();
+      const m = document.getElementById('login-modal');
+      if (m?.showModal) m.showModal();
     }
   });
 

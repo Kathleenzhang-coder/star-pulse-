@@ -12,6 +12,7 @@ const { localizeForChinese } = require('./translate');
 const multer = require('multer');
 const {
   UPLOADS_DIR,
+  DATA_ROOT,
   ensureUploadsDir,
   getPosts,
   getPost,
@@ -31,9 +32,17 @@ const uploadStorage = multer.diskStorage({
 
 const upload = multer({
   storage: uploadStorage,
-  limits: { fileSize: 12 * 1024 * 1024, files: 5 },
+  limits: { fileSize: 30 * 1024 * 1024, files: 5 },
   fileFilter: (_req, file, cb) => {
-    cb(null, /^(image\/|video\/)/.test(file.mimetype));
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const mime = (file.mimetype || '').toLowerCase();
+    const ok = mime.startsWith('image/') || mime.startsWith('video/')
+      || mime === 'application/octet-stream'
+      || ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.mp4', '.mov', '.webm', '.m4v', '.3gp'].includes(ext);
+    if (!ok) {
+      return cb(new Error(`不支持的文件类型: ${mime || ext || 'unknown'}`));
+    }
+    cb(null, true);
   },
 });
 
@@ -302,20 +311,30 @@ function buildPostPayload(body, files = {}) {
 app.use(express.json({ limit: '1mb' }));
 app.use('/uploads', express.static(UPLOADS_DIR));
 
+app.use('/js', express.static(path.join(__dirname, 'js'), {
+  setHeaders(res) { res.setHeader('Cache-Control', 'no-cache'); },
+}));
+app.use('/css', express.static(path.join(__dirname, 'css'), {
+  setHeaders(res) { res.setHeader('Cache-Control', 'no-cache'); },
+}));
+
 app.get('/api/posts', (_req, res) => {
   res.json({ items: getPosts() });
 });
 
 app.post('/api/posts', (req, res, next) => {
-  if (req.is('application/json')) {
+  const finish = (built) => {
+    if (built.error) return res.status(400).json({ error: built.error });
     try {
-      const built = buildPostPayload(req.body);
-      if (built.error) return res.status(400).json({ error: built.error });
       const post = createPost(built.post);
       return res.json({ post });
     } catch (err) {
-      return res.status(500).json({ error: err.message });
+      return res.status(500).json({ error: err.message || '保存失败' });
     }
+  };
+
+  if (req.is('application/json')) {
+    return finish(buildPostPayload(req.body));
   }
 
   upload.fields([
@@ -323,17 +342,10 @@ app.post('/api/posts', (req, res, next) => {
     { name: 'video', maxCount: 1 },
   ])(req, res, (err) => {
     if (err) return next(err);
-    try {
-      const built = buildPostPayload(req.body, {
-        images: req.files?.images || [],
-        video: req.files?.video || [],
-      });
-      if (built.error) return res.status(400).json({ error: built.error });
-      const post = createPost(built.post);
-      res.json({ post });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
+    finish(buildPostPayload(req.body, {
+      images: req.files?.images || [],
+      video: req.files?.video || [],
+    }));
   });
 });
 
@@ -414,6 +426,8 @@ app.get('/api/news', async (req, res) => {
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
+    posts: getPosts().length,
+    dataRoot: DATA_ROOT,
     cached: { zh: cache.zh.items.length, en: cache.en.items.length },
   });
 });

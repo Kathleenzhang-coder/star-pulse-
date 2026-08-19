@@ -27,6 +27,16 @@ function initNavigation() {
   });
 
   window.switchTab = switchTab;
+
+  const hashTab = location.hash.replace(/^#/, '');
+  if (hashTab && ['news', 'community', 'map'].includes(hashTab)) {
+    switchTab(hashTab);
+  }
+
+  window.addEventListener('hashchange', () => {
+    const tab = location.hash.replace(/^#/, '');
+    if (['news', 'community', 'map'].includes(tab)) switchTab(tab);
+  });
 }
 
 function initModals() {

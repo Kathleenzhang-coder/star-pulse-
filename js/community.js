@@ -5,6 +5,41 @@ let pendingImageFiles = [];
 let pendingVideoFile = null;
 let pendingPreviewUrls = [];
 let postsRefreshTimer = null;
+let wantComposeAfterLogin = false;
+let previewTargetId = 'compose-media-preview';
+
+function safeShowModal(id) {
+  const el = document.getElementById(id);
+  if (!el) return false;
+  try {
+    if (typeof el.showModal === 'function') {
+      el.showModal();
+      return true;
+    }
+  } catch { /* fallback below */ }
+  el.setAttribute('open', '');
+  return true;
+}
+
+function requireLoginForCompose() {
+  if (getUser()) return true;
+  wantComposeAfterLogin = true;
+  safeShowModal('login-modal');
+  showToast(t('login_for_post'), 'info');
+  return false;
+}
+
+function focusComposeBox() {
+  const box = document.getElementById('compose-form');
+  const input = document.getElementById('compose-content');
+  if (!box || !input) return;
+  box.classList.add('highlight');
+  box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  setTimeout(() => {
+    input.focus();
+    box.classList.remove('highlight');
+  }, 600);
+}
 
 function normalizePost(post) {
   if (!post || typeof post !== 'object') return null;
@@ -42,67 +77,155 @@ async function addPostComment(id, comment) {
 function initCommunity() {
   bindEvents();
   refreshCommunity();
+  updateComposeHint();
   if (postsRefreshTimer) clearInterval(postsRefreshTimer);
   postsRefreshTimer = setInterval(refreshCommunity, 45000);
+
+  document.addEventListener('user-login', () => {
+    updateComposeHint();
+    if (wantComposeAfterLogin) {
+      wantComposeAfterLogin = false;
+      focusComposeBox();
+    }
+  });
+
+  document.addEventListener('locale-change', updateComposeHint);
 }
 
-async function loadPosts() {
+function updateComposeHint() {
+  const hint = document.getElementById('compose-hint');
+  if (!hint) return;
+  hint.textContent = getUser() ? t('compose_hint') : t('compose_hint_login');
+}
+
+function setComposeStatus(message, type = 'info') {
+  const el = document.getElementById('compose-status');
+  if (!el) return;
+  if (!message) {
+    el.textContent = '';
+    el.className = 'compose-status hidden';
+    return;
+  }
+  el.textContent = message;
+  el.className = `compose-status ${type === 'error' ? 'error' : type === 'success' ? 'success' : ''}`;
+}
+
+let communityEventsBound = false;
+
+function bindEvents() {
+  if (communityEventsBound) return;
+  communityEventsBound = true;
+
+  document.addEventListener('submit', (e) => {
+    if (e.target.id === 'compose-form') {
+      e.preventDefault();
+      submitComposePost();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('#create-post-btn')) {
+      e.preventDefault();
+      if (!requireLoginForCompose()) return;
+      focusComposeBox();
+    }
+  });
+
+  document.addEventListener('change', (e) => {
+    const id = e.target.id;
+    if (id === 'compose-images') handleImagePick(e, 'compose-images');
+    else if (id === 'compose-video') handleVideoPick(e, 'compose-video');
+    else if (id === 'post-images') handleImagePick(e, 'post-images');
+    else if (id === 'post-video') handleVideoPick(e, 'post-video');
+  });
+
+  document.getElementById('post-form')?.addEventListener('submit', handlePostSubmit);
+
+  document.getElementById('topic-list')?.addEventListener('click', (e) => {
+    const li = e.target.closest('li');
+    if (!li) return;
+    if (!requireLoginForCompose()) return;
+    const tags = document.getElementById('compose-tags');
+    if (tags) tags.value = li.dataset.topic;
+    focusComposeBox();
+  });
+}
+
+async function prepareImageFile(file) {
+  const name = file.name || 'photo.jpg';
+  const type = (file.type || '').toLowerCase();
+  const canCompress = typeof createImageBitmap === 'function'
+    && (type.startsWith('image/') || /\.(heic|heif|jpg|jpeg|png|webp)$/i.test(name));
+
+  if (!canCompress) return file;
+
   try {
-    const resp = await fetch(`${getApiBase()}/api/posts`, { cache: 'no-store' });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    posts = (data.items || []).map(normalizePost).filter(Boolean);
+    const bitmap = await createImageBitmap(file);
+    const max = 1920;
+    let { width, height } = bitmap;
+    if (width > max || height > max) {
+      const scale = Math.min(max / width, max / height);
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, width, height);
+    bitmap.close?.();
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob(b => (b ? resolve(b) : reject(new Error('compress failed'))), 'image/jpeg', 0.82);
+    });
+    const outName = name.replace(/\.(heic|heif|png|webp|jpeg|jpg)$/i, '') + '.jpg';
+    return new File([blob], outName, { type: 'image/jpeg' });
   } catch (err) {
-    console.warn('[树洞] 加载失败:', err.message);
+    console.warn('[树洞] 图片压缩跳过:', err.message);
+    return file;
   }
 }
 
-function bindEvents() {
-  document.getElementById('create-post-btn').addEventListener('click', () => {
-    if (!getUser()) {
-      document.getElementById('login-modal').showModal();
-      return;
-    }
-    openPostModal();
-  });
+async function handleImagePick(e, inputId) {
+  previewTargetId = inputId.startsWith('compose') ? 'compose-media-preview' : 'media-preview';
+  const files = [...(e.target.files || [])];
+  e.target.value = '';
+  if (!files.length) return;
 
-  document.getElementById('post-form').addEventListener('submit', handlePostSubmit);
+  setComposeStatus(t('media_processing'), 'info');
+  let added = 0;
 
-  document.getElementById('post-images').addEventListener('change', (e) => {
-    for (const file of e.target.files) {
-      if (pendingImageFiles.length >= 4) break;
-      if (file.size > 4 * 1024 * 1024) {
-        showToast(t('err_img_size'), 'error');
-        continue;
-      }
-      pendingImageFiles.push(file);
+  for (const raw of files) {
+    if (pendingImageFiles.length >= 4) break;
+    const file = await prepareImageFile(raw);
+    if (file.size > 10 * 1024 * 1024) {
+      showToast(t('err_img_size'), 'error');
+      continue;
     }
-    renderMediaPreview();
-    e.target.value = '';
-  });
+    pendingImageFiles.push(file);
+    added++;
+  }
 
-  document.getElementById('post-video').addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    e.target.value = '';
-    if (!file) return;
-    if (file.size > 12 * 1024 * 1024) {
-      showToast(t('err_video_size'), 'error');
-      return;
-    }
-    pendingVideoFile = file;
-    renderMediaPreview();
-  });
+  if (added > 0) {
+    setComposeStatus(t('media_added', { n: pendingImageFiles.length }), 'success');
+  } else {
+    setComposeStatus(t('media_pick_fail'), 'error');
+  }
+  renderMediaPreview();
+}
 
-  document.getElementById('topic-list').addEventListener('click', (e) => {
-    const li = e.target.closest('li');
-    if (!li) return;
-    document.getElementById('post-tags').value = li.dataset.topic;
-    if (!getUser()) {
-      document.getElementById('login-modal').showModal();
-      return;
-    }
-    openPostModal();
-  });
+function handleVideoPick(e, inputId) {
+  previewTargetId = inputId.startsWith('compose') ? 'compose-media-preview' : 'media-preview';
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  if (file.size > 25 * 1024 * 1024) {
+    setComposeStatus(t('err_video_size'), 'error');
+    showToast(t('err_video_size'), 'error');
+    return;
+  }
+  pendingVideoFile = file;
+  pendingImageFiles = [];
+  setComposeStatus(t('video_added'), 'success');
+  renderMediaPreview();
 }
 
 function clearMediaPreview() {
@@ -111,17 +234,18 @@ function clearMediaPreview() {
 }
 
 function openPostModal() {
+  previewTargetId = 'media-preview';
   pendingImageFiles = [];
   pendingVideoFile = null;
   clearMediaPreview();
-  document.getElementById('post-form').reset();
-  document.getElementById('media-preview').innerHTML = '';
-  document.getElementById('post-modal').showModal();
+  document.getElementById('post-form')?.reset();
+  safeShowModal('post-modal');
 }
 
 function renderMediaPreview() {
   clearMediaPreview();
-  const preview = document.getElementById('media-preview');
+  const preview = document.getElementById(previewTargetId) || document.getElementById('compose-media-preview');
+  if (!preview) return;
 
   let html = pendingImageFiles.map((file, i) => {
     const url = URL.createObjectURL(file);
@@ -158,46 +282,136 @@ function renderMediaPreview() {
   });
 }
 
-async function createPostOnServer(payload) {
-  const hasMedia = pendingImageFiles.length > 0 || pendingVideoFile;
+async function loadPosts() {
+  try {
+    const resp = await fetch(`${getApiBase()}/api/posts`, { cache: 'no-store' });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    posts = (data.items || []).map(normalizePost).filter(Boolean);
+  } catch (err) {
+    console.warn('[树洞] 加载失败:', err.message);
+  }
+}
 
-  let resp;
-  if (hasMedia) {
-    const fd = new FormData();
-    Object.entries(payload).forEach(([key, val]) => {
-      if (key === 'tags') fd.append(key, JSON.stringify(val));
-      else fd.append(key, val);
-    });
-    pendingImageFiles.forEach(file => fd.append('images', file));
-    if (pendingVideoFile) fd.append('video', pendingVideoFile);
-    resp = await fetch(`${getApiBase()}/api/posts`, { method: 'POST', body: fd });
-  } else {
-    resp = await fetch(`${getApiBase()}/api/posts`, {
+async function createPostOnServer(payload) {
+  const hasFiles = pendingImageFiles.length > 0 || pendingVideoFile;
+
+  if (!hasFiles) {
+    const resp = await fetch(`${getApiBase()}/api/posts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        title: payload.title || '',
+        content: payload.content || '',
+        tags: payload.tags || [],
+        authorId: payload.authorId,
+        authorName: payload.authorName,
+        authorAvatar: payload.authorAvatar || '',
+      }),
     });
+    const text = await resp.text();
+    let data = {};
+    try { data = JSON.parse(text); } catch { /* HTML error page */ }
+    if (!resp.ok) {
+      const msg = data.error
+        || (text.includes('Cannot POST') ? t('post_toast_server') : t('post_toast_fail'));
+      throw new Error(msg);
+    }
+    return normalizePost(data.post);
   }
 
+  const fd = new FormData();
+  fd.append('title', payload.title || '');
+  fd.append('content', payload.content || '');
+  fd.append('tags', JSON.stringify(payload.tags || []));
+  fd.append('authorId', payload.authorId);
+  fd.append('authorName', payload.authorName);
+  fd.append('authorAvatar', payload.authorAvatar || '');
+  pendingImageFiles.forEach(file => fd.append('images', file));
+  if (pendingVideoFile) fd.append('video', pendingVideoFile);
+
+  const resp = await fetch(`${getApiBase()}/api/posts`, { method: 'POST', body: fd });
   const text = await resp.text();
   let data = {};
   try { data = JSON.parse(text); } catch { /* HTML error page */ }
 
   if (!resp.ok) {
-    throw new Error(data.error || t('post_toast_fail'));
+    const msg = data.error
+      || (text.includes('Cannot POST') ? t('post_toast_server') : t('post_toast_fail'));
+    throw new Error(msg);
   }
   return normalizePost(data.post);
 }
 
-async function handlePostSubmit(e) {
-  e.preventDefault();
+async function submitComposePost() {
+  if (!requireLoginForCompose()) return;
+
   const user = getUser();
-  if (!user) {
-    document.getElementById('login-modal').showModal();
+  const content = document.getElementById('compose-content')?.value.trim() || '';
+  const tags = parseTags(document.getElementById('compose-tags')?.value || '');
+  const hasMedia = pendingImageFiles.length > 0 || pendingVideoFile;
+
+  if (!content && !hasMedia) {
+    setComposeStatus(t('post_empty_hint'), 'error');
+    showToast(t('post_empty_hint'), 'error');
     return;
   }
 
+  const submitBtn = document.getElementById('compose-submit');
+  const submitLabel = submitBtn?.textContent || t('post_submit');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = t('post_posting');
+  }
+  setComposeStatus(t('post_posting'), 'info');
+
+  try {
+    const post = await createPostOnServer({
+      title: '',
+      content,
+      tags,
+      authorId: user.id,
+      authorName: user.nickname,
+      authorAvatar: user.avatar,
+    });
+
+    if (post) {
+      const idx = posts.findIndex(p => p.id === post.id);
+      if (idx >= 0) posts[idx] = post;
+      else posts.unshift(post);
+    } else {
+      await loadPosts();
+    }
+
+    renderPosts();
+    renderSidebar();
+    document.getElementById('compose-content').value = '';
+    document.getElementById('compose-tags').value = '';
+    pendingImageFiles = [];
+    pendingVideoFile = null;
+    clearMediaPreview();
+    renderMediaPreview();
+    setComposeStatus(t('post_toast_scroll'), 'success');
+    showToast(t('post_toast'), 'success');
+    document.getElementById('post-feed')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (err) {
+    setComposeStatus(err.message || t('post_toast_fail'), 'error');
+    showToast(err.message || t('post_toast_fail'), 'error');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = submitLabel;
+    }
+  }
+}
+
+async function handlePostSubmit(e) {
+  e.preventDefault();
+  previewTargetId = 'media-preview';
+  if (!requireLoginForCompose()) return;
+
   const form = e.currentTarget;
+  const user = getUser();
   const title = document.getElementById('post-title').value.trim();
   const content = document.getElementById('post-content').value.trim();
   const tags = parseTags(document.getElementById('post-tags').value);
@@ -209,7 +423,9 @@ async function handlePostSubmit(e) {
   }
 
   const submitBtn = form.querySelector('[type="submit"]');
+  const submitLabel = submitBtn.textContent;
   submitBtn.disabled = true;
+  submitBtn.textContent = t('post_posting');
 
   try {
     const post = await createPostOnServer({
@@ -231,7 +447,7 @@ async function handlePostSubmit(e) {
 
     renderPosts();
     renderSidebar();
-    document.getElementById('post-modal').close();
+    document.getElementById('post-modal')?.close();
     pendingImageFiles = [];
     pendingVideoFile = null;
     clearMediaPreview();
@@ -240,6 +456,7 @@ async function handlePostSubmit(e) {
     showToast(err.message || t('post_toast_fail'), 'error');
   } finally {
     submitBtn.disabled = false;
+    submitBtn.textContent = submitLabel;
   }
 }
 
@@ -404,3 +621,7 @@ function refreshCommunity() {
     renderSidebar();
   });
 }
+
+window.submitComposePost = submitComposePost;
+window.__pickComposeImages = (e) => handleImagePick(e, 'compose-images');
+window.__pickComposeVideo = (e) => handleVideoPick(e, 'compose-video');

@@ -1,23 +1,6 @@
-/** StarPulse 离线壳 — 静态资源缓存，资讯接口始终走网络 */
-const CACHE = 'starpulse-v4';
-const SHELL = [
-  '/',
-  '/index.html',
-  '/manifest.webmanifest',
-  '/icons/icon.svg',
-  '/css/main.css',
-  '/js/data/news-seed.js',
-  '/js/storage.js',
-  '/js/i18n.js',
-  '/js/utils.js',
-  '/js/interactions.js',
-  '/js/auth.js',
-  '/js/news.js',
-  '/js/community.js',
-  '/js/map-social.js',
-  '/js/pwa.js',
-  '/js/app.js',
-];
+/** StarPulse 离线壳 — JS/CSS 始终走网络，避免缓存旧代码 */
+const CACHE = 'starpulse-v9';
+const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icons/icon.svg'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -37,11 +20,19 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const { request } = event;
-  const url = new URL(request.url);
-
   if (request.method !== 'GET') return;
-  if (url.pathname.startsWith('/api/')) {
+
+  const url = new URL(request.url);
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/uploads/')) {
     event.respondWith(fetch(request));
+    return;
+  }
+
+  // JS / CSS 始终优先网络，防止树洞等模块用到旧代码
+  if (url.pathname.startsWith('/js/') || url.pathname.startsWith('/css/')) {
+    event.respondWith(
+      fetch(request).catch(() => caches.match(request)),
+    );
     return;
   }
 
