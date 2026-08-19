@@ -1,0 +1,4 @@
+node_modules/
+uploads/
+.posts-store.json
+.news-store.json
